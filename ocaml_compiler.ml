@@ -309,12 +309,32 @@ let link_units table extensions cmX_ext cma_ext a_ext linker tagger contents_lis
   let include_dirs = Pathname.include_dirs_of dir in
   let extension_keys = List.map fst extensions in
   let libs = prepare_libs cma_ext a_ext cmX build in
-  let results =
+  let results_ext exts =
     build begin
       List.map begin fun module_name ->
-        expand_module include_dirs module_name extension_keys
+        expand_module include_dirs module_name exts
       end contents_list
     end in
+  (* Source files (mli and ml) can be usefully prefetched at this
+     stage, where we have access to the list of files needed.
+
+     This allows for better parallelization of builds given the
+     current limitations of the parallel machinery: if we don't
+     prefetch, those files will be part of the dependencies of the
+     .cmo/.cmx built in bulk, and therefore built sequentially
+     (only the final command is parallelized).
+
+     It seems that prefetching .cmi files doesn't result in much
+     speedup, as those files tend to have several dynamic dependencies
+     (other .cmi files), which result in rather sequential build
+     orders.
+  *)
+  let prefetch ext = ignore (results_ext [ext]) in
+  prefetch "mli.depends";
+  if List.mem "cmo" extension_keys || List.mem "cmx" extension_keys then begin
+    prefetch "ml.depends";
+  end;
+  let results = results_ext extension_keys in
   let module_paths =
     List.map begin function
       | Good p ->
