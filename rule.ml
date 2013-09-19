@@ -22,8 +22,73 @@ exception Exit_rule_error of string
 exception Failed
 
 type env = Pathname.t -> Pathname.t
-type builder = Pathname.t list list -> (Pathname.t, exn) Outcome.t list
+
+type build_result = (Pathname.t, exn) Outcome.t
+type builder = Pathname.t list list -> build_result list
+type build_order = (Pathname.t list * (build_result -> unit)) list
+
+type 'a gen_action = env -> 'a action_result
+and 'a action_result =
+| Direct of (builder -> 'a)
+| Final of 'a
+| Step of build_order * (unit -> 'a action_result)
+
+let rec map_action_result f = function
+  | Final result -> Final (f result)
+  | Direct action -> Direct (fun builder -> f (action builder))
+  | Step (order, next) ->
+    Step (order, (fun () -> map_action_result f (next ())))
+
+let rec run_action_result builder = function
+  | Final result -> result
+  | Direct action -> action builder
+  | Step (order, next) ->
+    let deps, checks = List.split order in
+    Printf.eprintf "static dep: %s\n%!"
+      (String.concat " & " (List.map (String.concat "|") deps));
+    let results = builder deps in
+    List.iter2 (fun check res -> check res) checks results;
+    run_action_result builder (next ())
+
+let final v = Final v
+let direct action = Direct action
+let build_order order = Step (order, fun () -> Final ())
+
+let rec seq result continuation = match result with
+  | Final v -> continuation v
+  | Direct action ->
+    Direct (fun builder ->
+      run_action_result builder (continuation (action builder)))
+  | Step (order, next) ->
+    Step (order, fun () -> seq (next ()) continuation)
+
+let rec combine action_results =
+  let (finals, directs, steps) =
+    let add (finals, directs, steps) = function
+      | Final v -> (v::finals, directs, steps)
+      | Direct act -> (finals, act::directs, steps)
+      | Step (order, next) -> (finals, directs, (order,next)::steps) in
+    List.fold_left add ([], [], []) action_results in
+  let add_steps cont =
+    if steps = [] then cont []
+    else begin
+      let deps, nexts = List.split steps in
+      Step (List.flatten deps, fun () ->
+        seq (combine (List.map (fun next -> next ()) nexts)) cont)
+    end in
+  let add_directs cont =
+    if directs = [] then Final (cont [])
+    else begin
+      let direct_results build =
+        List.map (fun action -> action build) directs in
+      Direct (fun build -> cont (direct_results build))
+    end in
+  add_steps (fun res_steps ->
+    add_directs (fun directs ->
+      res_steps @ directs @ finals))
+
 type action = env -> builder -> Command.t
+type indirect_action = Command.t gen_action
 
 type digest_command = { digest : string; command : Command.t }
 
@@ -33,7 +98,7 @@ type 'a gen_rule =
     prods : 'a list; (* Note that prods also contains stamp *)
     stamp : 'a option;
     doc   : string option;
-    code  : env -> builder -> digest_command }
+    code  : digest_command gen_action }
 
 type rule = Pathname.t gen_rule
 type rule_scheme = Resource.resource_pattern gen_rule
@@ -161,7 +226,7 @@ let call builder r =
       | Bad _ -> res
     end results in
   let () = dprintf 5 "start rule %a" print r in
-  let action = r.code (fun x -> x) builder in
+  let action = run_action_result builder (r.code (fun x -> x)) in
   build_deps_of_tags_on_cmd builder action.command;
   let dyndeps = !dyndeps in
   let () = dprintf 10 "dyndeps: %a" Resources.print dyndeps in
@@ -263,7 +328,8 @@ let (get_rules, add_rule, clear_rules) =
   end,
   (fun () -> rules := [])
 
-let rule name ?tags ?(prods=[]) ?(deps=[]) ?prod ?dep ?stamp ?(insert = `bottom) ?doc code =
+let indirect_rule name
+    ?tags ?(prods=[]) ?(deps=[]) ?prod ?dep ?stamp ?(insert = `bottom) ?doc code =
   let () =
     match tags with
       | None -> ()
@@ -293,10 +359,11 @@ let rule name ?tags ?(prods=[]) ?(deps=[]) ?prod ?dep ?stamp ?(insert = `bottom)
         Some (Resource.import_pattern stamp), stamp :: prods
   in
   let prods = res_add Resource.import_pattern prods prod in
-  let code env build =
-    let cmd = code env build in
-    { digest  = Command.digest cmd
-    ; command = cmd }
+  let code env =
+    map_action_result (fun cmd -> {
+      digest = Command.digest cmd;
+      command = cmd;
+    }) (code env)
   in
   add_rule insert
   { name  = name;
@@ -305,6 +372,10 @@ let rule name ?tags ?(prods=[]) ?(deps=[]) ?prod ?dep ?stamp ?(insert = `bottom)
     doc = doc;
     prods = prods;
     code  = code }
+
+let rule name ?tags ?prods ?deps ?prod ?dep ?stamp ?insert ?doc code =
+  indirect_rule name ?tags ?prods ?deps ?prod ?dep ?stamp ?insert ?doc
+    (fun env -> Direct (fun build -> code env build))
 
 module Common_commands = struct
   open Command
