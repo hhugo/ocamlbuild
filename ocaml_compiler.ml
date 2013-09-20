@@ -24,6 +24,14 @@ open Ocaml_utils
 open Rule.Common_commands
 open Outcome
 
+
+let library_index = Hashtbl.create 32
+let package_index = Hashtbl.create 32
+let hidden_packages = ref []
+
+let hide_package_contents package =
+  hidden_packages := package :: !hidden_packages
+
 let forpack_flags arg tags =
   if Tags.mem "pack" tags then
     Ocaml_arch.forpack_flags_of_pathname arg
@@ -106,14 +114,14 @@ let native_shared_lib_linker tags =
 let native_lib_linker_tags tags = tags++"ocaml"++"link"++"native"++"library"
 
 
-let prepare_compile build ml =
+module Indirect = struct
+let prepare_compile ml =
   let dir = Pathname.dirname ml in
   let include_dirs = Pathname.include_dirs_of dir in
   let modules = path_dependencies_of ml in
-  let results =
-    build (List.map (fun (_, x) -> expand_module include_dirs x ["cmi"]) modules) in
-  List.iter2 begin fun (mandatory, name) res ->
-    match mandatory, res with
+  let module_build_order (mandatory, name) =
+    (expand_module include_dirs name ["cmi"],
+     fun result -> match mandatory, result with
     | _, Good _ -> ()
     | `mandatory, Bad exn ->
         if not !Options.ignore_auto then raise exn;
@@ -141,32 +149,35 @@ let prepare_compile build ml =
               @]"
           );
     | `just_try, Bad _ -> ()
-  end modules results
+  in build_order (List.map module_build_order modules)
 
-let byte_compile_ocaml_interf mli cmi env build =
+let byte_compile_ocaml_interf mli cmi env (* build *) =
   let mli = env mli and cmi = env cmi in
-  prepare_compile build mli;
-  ocamlc_c (tags_of_pathname mli++"interf") mli cmi
+  seq (prepare_compile mli) & fun () ->
+  final (ocamlc_c (tags_of_pathname mli++"interf") mli cmi)
 
 (* given that .cmi can be built from either ocamlc and ocamlopt, this
    "agnostic" rule chooses either compilers depending on whether the
    "native" tag is present. This was requested during PR#4613 as way
    to enable using ocamlbuild in environments where only ocamlopt is
    available, not ocamlc. *)
-let compile_ocaml_interf mli cmi env build =
+let compile_ocaml_interf mli cmi env =
   let mli = env mli and cmi = env cmi in
-  prepare_compile build mli;
-  let tags = tags_of_pathname mli++"interf" in 
+  seq (prepare_compile mli) & fun () ->
+  let tags = tags_of_pathname mli++"interf" in
   let comp_c = if Tags.mem "native" tags then ocamlopt_c else ocamlc_c in
-  comp_c tags mli cmi
+  final (comp_c tags mli cmi)
 
-let byte_compile_ocaml_implem ?tag ml cmo env build =
+let byte_compile_ocaml_implem ?tag ml cmo env =
   let ml = env ml and cmo = env cmo in
-  prepare_compile build ml;
-  ocamlc_c (Tags.union (tags_of_pathname ml) (tags_of_pathname cmo)++"implem"+++tag) ml cmo
+  seq (prepare_compile ml) & fun () ->
+  let tags =
+    Tags.union (tags_of_pathname ml) (tags_of_pathname cmo)
+    ++"implem"+++tag in
+  final (ocamlc_c tags ml cmo)
 
 let cache_prepare_link = Hashtbl.create 107
-let rec prepare_link tag cmx extensions build =
+let rec prepare_link tag cmx extensions =
   let key = (tag, cmx, extensions) in
   let dir = Pathname.dirname cmx in
   let include_dirs = Pathname.include_dirs_of dir in
@@ -174,8 +185,10 @@ let rec prepare_link tag cmx extensions build =
   let mli = Pathname.update_extensions "mli" cmx in
   let modules =
     List.union
-      (if Pathname.exists (ml-.-"depends") then path_dependencies_of ml else [])
-      (if Pathname.exists (mli-.-"depends") then path_dependencies_of mli else [])
+      (if Pathname.exists (ml-.-"depends")
+       then path_dependencies_of ml else [])
+      (if Pathname.exists (mli-.-"depends")
+       then path_dependencies_of mli else [])
   in
   let modules =
     if (modules = []) && (Pathname.exists (ml^"pack")) then
@@ -183,22 +196,35 @@ let rec prepare_link tag cmx extensions build =
     else
       modules
   in
-  if modules <> [] && not (Hashtbl.mem cache_prepare_link key) then
+  if modules = [] || Hashtbl.mem cache_prepare_link key
+  then final ()
+  else begin
     let () = Hashtbl.add cache_prepare_link key true in
-    let modules' = List.map (fun (_, x) -> expand_module include_dirs x extensions) modules in
-    List.iter2 begin fun (mandatory, _) result ->
-      match mandatory, result with
-      | _, Good p -> prepare_link tag p extensions build
-      | `mandatory, Bad exn -> if not !Options.ignore_auto then raise exn
-      | `just_try, Bad _ -> ()
-    end modules (build modules')
+    let recursive_deps = ref [] in
+    let modules_build_order =
+      let module_order (mandatory, x) =
+        (expand_module include_dirs x extensions,
+         fun result -> match mandatory, result with
+           | _, Good p -> recursive_deps := p :: !recursive_deps
+           | `mandatory, Bad exn -> if not !Options.ignore_auto then raise exn
+           | `just_try, Bad _ -> ())
+      in List.map module_order modules in
+    seq (build_order (modules_build_order)) & fun () ->
+    let deps_action_results =
+      List.map (fun p -> prepare_link tag p extensions) !recursive_deps in
+    seq (combine (deps_action_results)) & fun results ->
+    final (List.iter (fun () -> ()) results)
+  end
 
-let native_compile_ocaml_implem ?tag ?(cmx_ext="cmx") ml env build =
+let native_compile_ocaml_implem ?tag ?(cmx_ext="cmx") ml env =
   let ml = env ml in
   let cmi = Pathname.update_extensions "cmi" ml in
   let cmx = Pathname.update_extensions cmx_ext ml in
-  prepare_link cmx cmi [cmx_ext; "cmi"] build;
-  ocamlopt_c (Tags.union (tags_of_pathname ml) (tags_of_pathname cmx)++"implem"+++tag) ml cmx
+  seq (prepare_link cmx cmi [cmx_ext; "cmi"]) & fun () ->
+  let tags =
+    Tags.union (tags_of_pathname ml) (tags_of_pathname cmx)
+    ++"implem"+++tag in
+  final (ocamlopt_c tags ml cmx)
 
 let libs_of_use_lib tags =
   Tags.fold begin fun tag acc ->
@@ -207,19 +233,18 @@ let libs_of_use_lib tags =
     with Not_found -> acc
   end tags []
 
-let prepare_libs cma_ext a_ext out build =
+let ignore_good_order targets =
+  List.map (fun lib -> lib, ignore_good) targets
+
+
+let prepare_libs cma_ext a_ext out =
   let out_no_ext = Pathname.remove_extension out in
   let libs1 = List.union (libraries_of out_no_ext) (libs_of_use_lib (tags_of_pathname out)) in
   let () = dprintf 10 "prepare_libs: %S -> %a" out pp_l libs1 in
   let libs = List.map (fun x -> x-.-cma_ext) libs1 in
   let libs2 = List.map (fun lib -> [lib-.-a_ext]) libs1 in
-  List.iter ignore_good (build libs2); libs
-
-let library_index = Hashtbl.create 32
-let package_index = Hashtbl.create 32
-let hidden_packages = ref []
-
-let hide_package_contents package = hidden_packages := package :: !hidden_packages
+  seq (build_order (ignore_good_order libs2)) & fun () ->
+  final libs
 
 module Ocaml_dependencies_input = struct
   let fold_dependencies = Resource.Cache.fold_dependencies
@@ -230,18 +255,25 @@ module Ocaml_dependencies = Ocaml_dependencies.Make(Ocaml_dependencies_input)
 
 let caml_transitive_closure = Ocaml_dependencies.caml_transitive_closure
 
-let link_one_gen linker tagger cmX out env _build =
+let link_one_gen linker tagger cmX out env =
   let cmX = env cmX and out = env out in
   let tags = tagger (tags_of_pathname out) in
-  linker tags [cmX] out
+  final (linker tags [cmX] out)
 
-let link_gen cmX_ext cma_ext a_ext extensions linker tagger cmX out env build =
+let link_gen cmX_ext cma_ext a_ext extensions linker tagger cmX out env =
   let cmX = env cmX and out = env out in
   let tags = tagger (tags_of_pathname out) in
-  let dyndeps = Rule.build_deps_of_tags build (tags++"link_with") in
+  let dyndeps_action =
+    let dyndeps = Command.deps_of_tags (tags++"link_with") in
+    let results = ref [] in
+    let record dep =
+      ([dep], fun result -> results := Outcome.good result :: !results) in
+    seq (build_order (List.map record dyndeps)) & fun () ->
+    final !results in
+  seq dyndeps_action & fun dyndeps ->
   let cmi = Pathname.update_extensions "cmi" cmX in
-  prepare_link cmX cmi extensions build;
-  let libs = prepare_libs cma_ext a_ext out build in
+  seq (prepare_link cmX cmi extensions) & fun () ->
+  seq (prepare_libs cma_ext a_ext out) & fun libs ->
   let hidden_packages = List.map (fun x -> x-.-cmX_ext) !hidden_packages in
   let deps =
     caml_transitive_closure
@@ -256,7 +288,7 @@ let link_gen cmX_ext cma_ext a_ext extensions linker tagger cmX out env build =
 
   if deps = [] then failwith "Link list cannot be empty";
   let () = dprintf 6 "link: %a -o %a" print_string_list deps Pathname.print out in
-  linker (tags++"dont_link_with") deps out
+  final (linker (tags++"dont_link_with") deps out)
 
 let byte_link_gen = link_gen "cmo" "cma" "cma" ["cmo"; "cmi"]
 
@@ -298,52 +330,37 @@ let native_profile_link x = native_profile_link_gen ocamlopt_link_prog
 let native_profile_library_link x = native_profile_link_gen native_lib_linker
   (fun tags -> native_lib_linker_tags tags++"profile") x
 
-let link_units table extensions cmX_ext cma_ext a_ext linker tagger contents_list cmX env build =
+let link_units table extensions cmX_ext cma_ext a_ext linker tagger contents_list cmX env =
   let cmX = env cmX in
   let tags = tagger (tags_of_pathname cmX) in
-  let _ = Rule.build_deps_of_tags build tags in
+  let order =
+    let singleton x = [x] in
+    ignore_good_order (List.map singleton (Command.deps_of_tags tags)) in
+  seq (build_order order) & fun () ->
   let dir =
     let dir1 = Pathname.remove_extensions cmX in
     if Resource.exists_in_source_dir dir1 then dir1
     else Pathname.dirname cmX in
   let include_dirs = Pathname.include_dirs_of dir in
   let extension_keys = List.map fst extensions in
-  let libs = prepare_libs cma_ext a_ext cmX build in
-  let results_ext exts =
-    build begin
-      List.map begin fun module_name ->
-        expand_module include_dirs module_name exts
-      end contents_list
-    end in
-  (* Source files (mli and ml) can be usefully prefetched at this
-     stage, where we have access to the list of files needed.
-
-     This allows for better parallelization of builds given the
-     current limitations of the parallel machinery: if we don't
-     prefetch, those files will be part of the dependencies of the
-     .cmo/.cmx built in bulk, and therefore built sequentially
-     (only the final command is parallelized).
-
-     It seems that prefetching .cmi files doesn't result in much
-     speedup, as those files tend to have several dynamic dependencies
-     (other .cmi files), which result in rather sequential build
-     orders.
-  *)
-  let prefetch ext = ignore (results_ext [ext]) in
-  prefetch "mli.depends";
-  if List.mem "cmo" extension_keys || List.mem "cmx" extension_keys then begin
-    prefetch "ml.depends";
-  end;
-  let results = results_ext extension_keys in
-  let module_paths =
-    List.map begin function
-      | Good p ->
-          let extension_values = List.assoc (Pathname.get_extensions p) extensions in
-          List.iter begin fun ext ->
-            List.iter ignore_good (build [[Pathname.update_extensions ext p]])
-          end extension_values; p
-      | Bad exn -> raise exn
-    end results in
+  seq (prepare_libs cma_ext a_ext cmX) & fun libs ->
+  let to_update = ref [] in
+  let make_order module_name =
+    (expand_module include_dirs module_name extension_keys,
+     function
+       | Bad exn -> raise exn
+       | Good p -> to_update := p :: !to_update) in
+  seq (build_order (List.map make_order contents_list)) & fun () ->
+  let module_paths = !to_update in
+  let update_order p =
+    (* List.iter ignore_good (build [[Pathname.update_extensions ext p]]) *)
+    let extension_values = List.assoc (Pathname.get_extensions p) extensions in
+    match extension_values with
+      | [] -> []
+      | [x] -> [[x], ignore_good]
+      | _::_::_ -> failwith "Rule.link_units: case not implemented yet" in
+  let total_order = List.concat & List.map update_order module_paths in
+  seq (build_order total_order) & fun () ->
   Hashtbl.replace table cmX module_paths;
   let hidden_packages = List.map (fun x -> x-.-cmX_ext) !hidden_packages in
   let deps =
@@ -359,15 +376,15 @@ let link_units table extensions cmX_ext cma_ext a_ext linker tagger contents_lis
   let is_not_stdlib x = x <> stdlib in
   let deps = List.filter is_not_stdlib deps in
 
-  linker tags deps cmX
+  final (linker tags deps cmX)
 
 let link_modules = link_units library_index
 let pack_modules = link_units package_index
 
-let link_from_file link modules_file cmX env build =
+let link_from_file link modules_file cmX env =
   let modules_file = env modules_file in
   let contents_list = string_list_of_file modules_file in
-  link contents_list cmX env build
+  link contents_list cmX env
 
 let byte_library_link_modules =
   link_modules [("cmo",[])] "cmo" "cma" "cma" byte_lib_linker byte_lib_linker_tags
@@ -444,3 +461,58 @@ let native_profile_shared_library_link_modules x =
 let native_profile_library_link_mllib = link_from_file native_profile_library_link_modules
 
 let native_profile_shared_library_link_mldylib = link_from_file native_profile_shared_library_link_modules
+end
+
+let prepare_compile build p =
+  run_action_result build (Indirect.prepare_compile p)
+
+let convert f = fun env build ->
+  run_action_result build (f env)
+
+let convert1 f = fun x -> convert (f x)
+let convert2 f = fun x y -> convert (f x y)
+let convert3 f = fun x y z -> convert (f x y z)
+
+let compile_ocaml_interf = convert2 Indirect.compile_ocaml_interf
+let byte_compile_ocaml_interf = convert2 Indirect.byte_compile_ocaml_interf
+let byte_compile_ocaml_implem ?tag =
+  convert2 (Indirect.byte_compile_ocaml_implem ?tag)
+let prepare_link = convert2 Indirect.prepare_link
+let native_compile_ocaml_implem ?tag ?cmx_ext =
+  convert1 (Indirect.native_compile_ocaml_implem ?tag ?cmx_ext)
+let prepare_libs = convert2 Indirect.prepare_libs
+let byte_link = convert2 Indirect.byte_link
+let byte_output_obj = convert2 Indirect.byte_output_obj
+let byte_library_link = convert2 Indirect.byte_library_link
+let native_link = convert2 Indirect.native_link
+let native_output_obj = convert2 Indirect.native_output_obj
+let native_library_link = convert2 Indirect.native_library_link
+let native_shared_library_link ?tags =
+  convert2 (Indirect.native_shared_library_link ?tags)
+let native_profile_link = convert2 Indirect.native_profile_link
+let native_profile_library_link = convert2 Indirect.native_profile_library_link
+let byte_library_link_modules = convert2 Indirect.byte_library_link_modules
+let byte_library_link_mllib = convert2 Indirect.byte_library_link_mllib
+
+let byte_debug_link = convert2 Indirect.byte_debug_link
+let byte_debug_library_link = convert2 Indirect.byte_debug_library_link
+let byte_debug_library_link_modules = convert2 Indirect.byte_debug_library_link_modules
+let byte_debug_library_link_mllib = convert2 Indirect.byte_debug_library_link_mllib
+let byte_pack_modules = convert2 Indirect.byte_pack_modules
+let byte_pack_mlpack = convert2 Indirect.byte_pack_mlpack
+let byte_debug_pack_modules = convert2 Indirect.byte_debug_pack_modules
+let byte_debug_pack_mlpack = convert2 Indirect.byte_debug_pack_mlpack
+let byte_toplevel_link_modules = convert2 Indirect.byte_toplevel_link_modules
+let byte_toplevel_link_mltop = convert2 Indirect.byte_toplevel_link_mltop
+let native_pack_modules = convert2 Indirect.native_pack_modules
+let native_pack_mlpack = convert2 Indirect.native_pack_mlpack
+let native_library_link_modules = convert2 Indirect.native_library_link_modules
+let native_library_link_mllib = convert2 Indirect.native_library_link_mllib
+let native_shared_library_link_modules = convert2 Indirect.native_shared_library_link_modules
+let native_shared_library_link_mldylib = convert2 Indirect.native_shared_library_link_mldylib
+let native_profile_pack_modules = convert2 Indirect.native_profile_pack_modules
+let native_profile_pack_mlpack = convert2 Indirect.native_profile_pack_mlpack
+let native_profile_library_link_modules = convert2 Indirect.native_profile_library_link_modules
+let native_profile_library_link_mllib = convert2 Indirect.native_profile_library_link_mllib
+let native_profile_shared_library_link_modules = convert2 Indirect.native_profile_shared_library_link_modules
+let native_profile_shared_library_link_mldylib = convert2 Indirect.native_profile_shared_library_link_mldylib
