@@ -26,6 +26,7 @@ type env = Pathname.t -> Pathname.t
 type build_result = (Pathname.t, exn) Outcome.t
 type builder = Pathname.t list list -> build_result list
 type build_order = (Pathname.t list * (build_result -> unit)) list
+type build_wrapper = builder -> builder
 
 type 'a gen_action = env -> 'a action_result
 and 'a action_result =
@@ -64,7 +65,7 @@ let rec seq result continuation = match result with
 
 let rec combine action_results =
   let (finals, directs, steps) =
-    let add (finals, directs, steps) = function
+    let rec add (finals, directs, steps) = function
       | Final v -> (v::finals, directs, steps)
       | Direct act -> (finals, act::directs, steps)
       | Step (order, next) -> (finals, directs, (order,next)::steps) in
@@ -205,12 +206,117 @@ let build_deps_of_tags builder tags =
   | [] -> []
   | deps -> List.map Outcome.good (builder (List.map (fun x -> [x]) deps))
 
-let build_deps_of_tags_on_cmd builder =
-  Command.iter_tags begin fun tags ->
-    match Command.deps_of_tags tags with
-    | [] -> ()
-    | deps -> List.iter ignore_good (builder (List.map (fun x -> [x]) deps))
-  end
+let build_deps_of_tags_on_cmd command =
+  let add_deps tags action =
+    let deps = Command.deps_of_tags tags in
+    let order = List.map (fun x -> ([x], ignore_good)) deps in
+    seq (build_order order) (fun () -> action) in
+  Command.fold_tags add_deps command (Final ())
+
+let indirect_call r =
+  let dyndeps = ref Resources.empty in
+  (*
+  let builder rs =
+    let results = builder rs in
+    List.map begin fun res ->
+      match res with
+      | Good res' ->
+          let () = dprintf 10 "new dyndep for %S(%a): %S" r.name print_resource_list r.prods res' in
+          dyndeps := Resources.add res' !dyndeps;
+          List.iter (fun x -> Resource.Cache.add_dependency x res') r.prods;
+          res
+      | Bad _ -> res
+    end results in
+  *)
+  let () = dprintf 5 "start rule %a" print r in
+  let action = ref None in
+  let compute_action =
+    seq (r.code (fun x -> x)) & fun act ->
+    action := Some act;
+    build_deps_of_tags_on_cmd act.command
+  in
+  seq compute_action & fun () ->
+  let action = match !action with
+    | None -> assert false
+    | Some act -> act in
+  let dyndeps = !dyndeps in
+  let () = dprintf 10 "dyndeps: %a" Resources.print dyndeps in
+  let (reason, cached) =
+    match exists2 List.find (fun r -> not (Resource.exists_in_build_dir r)) r.prods with
+    | Some r -> (`cache_miss_missing_prod r, false)
+    | _ ->
+      begin match exists2 List.find Resource.Cache.resource_has_changed r.deps with
+      | Some r -> (`cache_miss_changed_dep r, false)
+      | _ ->
+        begin match exists2 Resources.find_elt Resource.Cache.resource_has_changed dyndeps with
+        | Some r -> (`cache_miss_changed_dyn_dep r, false)
+        | _ ->
+            begin match cached_digest r with
+            | None -> (`cache_miss_no_digest, false)
+            | Some d ->
+                let rule_digest = digest_rule r dyndeps action in
+                if d = rule_digest then (`cache_hit, true)
+                else (`cache_miss_digest_changed(d, rule_digest), false)
+            end
+        end
+      end
+  in
+  let explain_reason l =
+    raw_dprintf (l+1) "mid rule %a: " print r;
+    match reason with
+    | `cache_miss_missing_prod r ->
+          dprintf l "cache miss: a product is not in build dir (%a)" Resource.print r
+    | `cache_miss_changed_dep r ->
+          dprintf l "cache miss: a dependency has changed (%a)" Resource.print r
+    | `cache_miss_changed_dyn_dep r ->
+          dprintf l "cache miss: a dynamic dependency has changed (%a)" Resource.print r
+    | `cache_miss_no_digest ->
+          dprintf l "cache miss: no digest found for %S (the command, a dependency, or a product)"
+            r.name
+    | `cache_hit -> dprintf (l+1) "cache hit"
+    | `cache_miss_digest_changed(old_d, new_d) ->
+          dprintf l "cache miss: the digest has changed for %S (the command, a dependency, or a product: %a <> %a)"
+            r.name print_digest old_d print_digest new_d
+  in
+  let prod_digests = digest_prods r in
+  (if not cached then List.iter Resource.clean r.prods);
+  (if !Options.nothing_should_be_rebuilt && not cached then
+    (explain_reason (-1);
+     let msg = sbprintf "Need to rebuild %a through the rule `%a'" print_resource_list r.prods print r in
+     raise (Exit_rule_error msg)));
+  explain_reason 3;
+  let thunk () =
+    try
+      if cached then Command.execute ~pretend:true action.command
+      else
+        begin match r.stamp with
+        | Some stamp ->
+            reset_filesys_cache ();
+            let digest_deps = digest_deps r dyndeps in
+            with_output_file stamp (fun oc -> output_string oc digest_deps)
+        | None -> ()
+        end;
+      List.iter (fun r -> Resource.Cache.resource_built r) r.prods;
+      (if not cached then
+        let new_rule_digest = digest_rule r dyndeps action in
+        let new_prod_digests = digest_prods r in
+        let () = store_digest r new_rule_digest in
+        List.iter begin fun p ->
+          let f = Pathname.to_string (Resource.in_build_dir p) in
+          (try let digest = List.assoc f prod_digests in
+               let new_digest = List.assoc f new_prod_digests in
+               if digest <> new_digest then raise Not_found
+          with Not_found -> Resource.Cache.resource_changed p)
+        end r.prods);
+      dprintf 5 "end rule %a" print r
+    with exn -> (List.iter Resource.clean r.prods; raise exn)
+  in
+  begin
+    if cached
+    then thunk ()
+    else List.iter (fun x -> Resource.Cache.suspend_resource x action.command thunk r.prods) r.prods
+  end;
+  Final ()
 
 let call builder r =
   let dyndeps = ref Resources.empty in
@@ -227,7 +333,7 @@ let call builder r =
     end results in
   let () = dprintf 5 "start rule %a" print r in
   let action = run_action_result builder (r.code (fun x -> x)) in
-  build_deps_of_tags_on_cmd builder action.command;
+  run_action_result builder (build_deps_of_tags_on_cmd action.command);
   let dyndeps = !dyndeps in
   let () = dprintf 10 "dyndeps: %a" Resources.print dyndeps in
   let (reason, cached) =

@@ -23,6 +23,7 @@ include Signatures.COMMAND with type tags = Tags.t and type pathname = string
 val string_target_and_tags_of_command_spec : spec -> string * string * Tags.t
 
 val iter_tags : (Tags.t -> unit) -> t -> unit
+val fold_tags : (Tags.t -> 'a -> 'a) -> t -> 'a -> 'a
 
 val fold_pathnames : (pathname -> 'a -> 'a) -> t -> 'a -> 'a
 

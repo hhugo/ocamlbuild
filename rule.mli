@@ -111,6 +111,7 @@ val get_rules : unit -> rule_scheme list
 val clear_rules : unit -> unit
 
 val call : builder -> rule -> unit
+val indirect_call : rule -> unit action_result
 
 val build_deps_of_tags : builder -> Tags.t -> Pathname.t list
 

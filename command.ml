@@ -329,6 +329,11 @@ let iter_tags f x =
     | Seq(s) -> List.iter cmd s in
   cmd x
 
+let fold_tags f x init =
+  let acc = ref init in
+  iter_tags (fun t -> acc := f t !acc) x;
+  !acc
+
 let fold_pathnames f x =
   let rec spec = function
     | N | A _ | Sh _ | V _ | Quote _ | T _ -> fun acc -> acc
