@@ -35,6 +35,9 @@ module type LIST = sig
   val filter_opt : ('a -> 'b option) -> 'a list -> 'b list
   val union : 'a list -> 'a list -> 'a list
   val ordered_unique : 'a list -> 'a list
+  val split3 : ('a * 'b * 'c) list -> 'a list * 'b list * 'c list
+  val iter3 : ('a -> 'b -> 'c -> unit) -> 'a list -> 'b list -> 'c list -> unit
+
   (* Original functions *)
   include module type of List
 end

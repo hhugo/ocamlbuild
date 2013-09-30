@@ -135,6 +135,18 @@ module List = struct
     in
     List.rev lst
 
+  let split3 li =
+    let add3 (xs,ys,zs) (x,y,z) = (x::xs, y::ys, z::zs) in
+    let (xs,ys,zs) = List.fold_left add3 ([], [], []) li in
+    (List.rev xs, List.rev ys, List.rev zs)
+
+  let rec iter3 f xs ys zs = match xs, ys, zs with
+    | [], [], [] -> ()
+    | x::xs, y::ys, z::zs -> f x y z; iter3 f xs ys zs
+    | [], _::_, _ | [], _, _::_
+    | _::_, [], _
+    | _::_, _, []
+      -> invalid_arg "List.iter3"
 end
 
 module String = struct

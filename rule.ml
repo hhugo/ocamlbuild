@@ -23,70 +23,126 @@ exception Failed
 
 type env = Pathname.t -> Pathname.t
 
+type rule_id = {
+  id_name: string;
+  id_prods: Pathname.t list;
+}
+
 type build_result = (Pathname.t, exn) Outcome.t
 type builder = Pathname.t list list -> build_result list
 type build_order = (Pathname.t list * (build_result -> unit)) list
+type 'a gen_build_order = ('a * Pathname.t list * (build_result -> unit)) list
 type build_wrapper = builder -> builder
 
 type 'a gen_action = env -> 'a action_result
 and 'a action_result =
-| Direct of (builder -> 'a)
-| Final of 'a
-| Step of build_order * (unit -> 'a action_result)
+| Return of 'a
+| Order of rule_id option gen_build_order * (unit -> 'a action_result)
+| Direct of rule_id option * (builder -> 'a action_result)
+(** Remark: while the abstract interface only requests (builder -> 'a) for
+    direct rules, (build -> 'a action_result) allows to regain some explicit
+    rule-structure after executing a fragment of direct rule. It is
+    useful for composability and performances; in particular,
+    defining (bind) for the (builder -> 'a) version requires to call
+    (run), which is not very nice. *)
+
+let return v = Return v
+let direct action = Direct (None, fun build -> Return (action build))
+let build_order order =
+  let order = List.map (fun (dep, check) -> (None, dep, check)) order in
+  Order (order, fun () -> Return ())
 
 let rec map_action_result f = function
-  | Final result -> Final (f result)
-  | Direct action -> Direct (fun builder -> f (action builder))
-  | Step (order, next) ->
-    Step (order, (fun () -> map_action_result f (next ())))
+  | Return result -> Return (f result)
+  | Direct (id, action) -> Direct (id, fun builder ->
+                                         map_action_result f (action builder))
+  | Order (order, next) ->
+    Order (order, (fun () -> map_action_result f (next ())))
+
+let rec bind action rest = match action with
+  | Return x -> rest x
+  | Direct (id, f) -> Direct (id, fun build -> bind (f build) rest)
+  | Order (deps, next) -> Order (deps, fun () -> bind (next ()) rest)
+
+let update_id oldid id = match oldid with
+  | Some _ -> oldid
+  | None -> Some id
+
+let rec annot id = function
+  | Return _ as action -> action
+  | Direct (oldid, f) ->
+    Direct (update_id oldid id,
+            fun build -> annot id (f build))
+  | Order (deps, next) ->
+    let update (oldid, dep, check) = (update_id oldid id, dep, check) in
+    Order (List.map update deps, fun () -> annot id (next ()))
+
+let add_dep {id_name = name; id_prods = prods} = function
+  | Bad _ -> ()
+  | Good result ->
+    dprintf 10 "new dyndep for %S(%a): %S"
+      name (List.print Resource.print) prods result;
+    (* dyndeps := Resources.add res' !dyndeps; *)
+    List.iter (fun prod -> Resource.Cache.add_dependency prod result) prods;
+    ()
+
+let maybe_add_dep maybe_id result =
+  match maybe_id with
+    | None -> ()
+    | Some id -> add_dep id result
+
+let wrap_builder maybe_id builder rs =
+  let results = builder rs in
+  List.iter (maybe_add_dep maybe_id) results;
+  results
 
 let rec run_action_result builder = function
-  | Final result -> result
-  | Direct action -> action builder
-  | Step (order, next) ->
-    let deps, checks = List.split order in
+  | Return result -> result
+  | Direct (id, action) ->
+    run_action_result builder (action (wrap_builder id builder))
+  | Order (order, next) ->
+    let ids, deps, checks = List.split3 order in
     Printf.eprintf "static dep: %s\n%!"
       (String.concat " & " (List.map (String.concat "|") deps));
     let results = builder deps in
-    List.iter2 (fun check res -> check res) checks results;
+    let check_result id check result =
+      maybe_add_dep id result;
+      check result; in
+    List.iter3 check_result ids checks results;
     run_action_result builder (next ())
 
-let final v = Final v
-let direct action = Direct action
-let build_order order = Step (order, fun () -> Final ())
-
-let rec seq result continuation = match result with
-  | Final v -> continuation v
-  | Direct action ->
-    Direct (fun builder ->
-      run_action_result builder (continuation (action builder)))
-  | Step (order, next) ->
-    Step (order, fun () -> seq (next ()) continuation)
-
-let rec combine action_results =
-  let (finals, directs, steps) =
-    let rec add (finals, directs, steps) = function
-      | Final v -> (v::finals, directs, steps)
-      | Direct act -> (finals, act::directs, steps)
-      | Step (order, next) -> (finals, directs, (order,next)::steps) in
-    List.fold_left add ([], [], []) action_results in
-  let add_steps cont =
-    if steps = [] then cont []
-    else begin
-      let deps, nexts = List.split steps in
-      Step (List.flatten deps, fun () ->
-        seq (combine (List.map (fun next -> next ()) nexts)) cont)
-    end in
-  let add_directs cont =
-    if directs = [] then Final (cont [])
-    else begin
-      let direct_results build =
-        List.map (fun action -> action build) directs in
-      Direct (fun build -> cont (direct_results build))
-    end in
-  add_steps (fun res_steps ->
-    add_directs (fun directs ->
-      res_steps @ directs @ finals))
+let merge action_results =
+  let rec merge already_returned = function
+    | [] -> return already_returned
+    | actions ->
+      let (returns, directs, orders) =
+        let rec add (returns, directs, orders) = function
+          | Return v -> (v::returns, directs, orders)
+          | Direct (id,act) -> (returns, (id,act)::directs, orders)
+          | Order (order, next) -> (returns, directs, (order,next)::orders) in
+        List.fold_left add ([], [], []) actions in
+      let orders_action cont =
+        if orders = [] then cont []
+        else begin
+          let deps, nexts = List.split orders in
+          Order (List.flatten deps, fun () ->
+            cont (List.map (fun next -> next ()) nexts))
+        end in
+      let directs_action cont  =
+        (** the Direct parts of the rule description are still executed
+            sequentially; trying to merge them would blur the rule
+            identity information, and wouldn't improve parallelism
+            anyway as their time is spend executing the (action build)
+            part.
+        *)
+        let add_direct cont (id, action) = fun reslist ->
+          Direct(id, fun build -> cont (action build :: reslist)) in
+        List.fold_left add_direct cont directs [] in
+      orders_action & fun after_orders ->
+      directs_action & fun after_directs ->
+      merge (returns @ already_returned) (after_orders @ after_directs)
+  in
+  merge [] action_results
 
 type action = env -> builder -> Command.t
 type indirect_action = Command.t gen_action
@@ -109,6 +165,11 @@ let deps_of_rule r = r.deps
 let prods_of_rule r = r.prods
 let stamp_of_rule r = r.stamp
 let doc_of_rule r = r.doc
+
+let id_of_rule {name; prods; _} = {
+  id_name = name;
+  id_prods = prods;
+}
 
 type 'a rule_printer = (Format.formatter -> 'a -> unit) -> Format.formatter -> 'a gen_rule -> unit
 
@@ -210,36 +271,16 @@ let build_deps_of_tags_on_cmd command =
   let add_deps tags action =
     let deps = Command.deps_of_tags tags in
     let order = List.map (fun x -> ([x], ignore_good)) deps in
-    seq (build_order order) (fun () -> action) in
-  Command.fold_tags add_deps command (Final ())
+    bind (build_order order) (fun () -> action) in
+  Command.fold_tags add_deps command (Return ())
 
 let indirect_call r =
-  let dyndeps = ref Resources.empty in
-  (*
-  let builder rs =
-    let results = builder rs in
-    List.map begin fun res ->
-      match res with
-      | Good res' ->
-          let () = dprintf 10 "new dyndep for %S(%a): %S" r.name print_resource_list r.prods res' in
-          dyndeps := Resources.add res' !dyndeps;
-          List.iter (fun x -> Resource.Cache.add_dependency x res') r.prods;
-          res
-      | Bad _ -> res
-    end results in
-  *)
+  annot { id_name = r.name; id_prods = r.prods } &
+  (* note that we marked the whole action with the rule identity *)
   let () = dprintf 5 "start rule %a" print r in
-  let action = ref None in
-  let compute_action =
-    seq (r.code (fun x -> x)) & fun act ->
-    action := Some act;
-    build_deps_of_tags_on_cmd act.command
-  in
-  seq compute_action & fun () ->
-  let action = match !action with
-    | None -> assert false
-    | Some act -> act in
-  let dyndeps = !dyndeps in
+  bind (r.code (fun x -> x)) & fun action ->
+  let dyndeps = Resource.Cache.dependencies (List.hd r.prods) in
+  bind (build_deps_of_tags_on_cmd action.command) & fun () ->
   let () = dprintf 10 "dyndeps: %a" Resources.print dyndeps in
   let (reason, cached) =
     match exists2 List.find (fun r -> not (Resource.exists_in_build_dir r)) r.prods with
@@ -316,7 +357,7 @@ let indirect_call r =
     then thunk ()
     else List.iter (fun x -> Resource.Cache.suspend_resource x action.command thunk r.prods) r.prods
   end;
-  Final ()
+  Return ()
 
 let call builder r =
   let dyndeps = ref Resources.empty in
@@ -481,7 +522,7 @@ let indirect_rule name
 
 let rule name ?tags ?prods ?deps ?prod ?dep ?stamp ?insert ?doc code =
   indirect_rule name ?tags ?prods ?deps ?prod ?dep ?stamp ?insert ?doc
-    (fun env -> Direct (fun build -> code env build))
+    (fun env -> direct (fun build -> code env build))
 
 module Common_commands = struct
   open Command

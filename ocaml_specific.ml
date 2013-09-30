@@ -34,11 +34,11 @@ module C_tools = struct
       if Filename.check_suffix x ".o" && !Options.ext_obj <> "o" then
         Pathname.update_extension !Options.ext_obj x
       else x in
-    let resluts = build (List.map (fun o -> List.map (fun dir -> dir / obj_of_o o) include_dirs) objs) in
+    let results = build (List.map (fun o -> List.map (fun dir -> dir / obj_of_o o) include_dirs) objs) in
     let objs = List.map begin function
       | Good o -> o
       | Bad exn -> raise exn
-    end resluts in
+    end results in
     Cmd(S[!Options.ocamlmklib; A"-o"; Px libname; T(tags_of_pathname a++"c"++"ocamlmklib"); atomize objs]);;
 end
 

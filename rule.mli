@@ -17,6 +17,8 @@ open Resource
 
 type env = Pathname.t -> Pathname.t
 
+type rule_id
+
 type build_result = (Pathname.t, exn) Outcome.t
 type builder = Pathname.t list list -> build_result list
 type build_order = (Pathname.t list * (build_result -> unit)) list
@@ -24,22 +26,35 @@ type build_order = (Pathname.t list * (build_result -> unit)) list
 type action = env -> builder -> Command.t
 type indirect_action = Command.t gen_action
 and 'a gen_action = env -> 'a action_result
+
 and 'a action_result
+(** the type of indirect rules which return
+    a value of type 'a  -- a command for example *)
 
 val run_action_result : builder -> 'a action_result -> 'a
 
-val final : 'a -> 'a action_result
 val direct : (builder -> 'a) -> 'a action_result
 (** in a "direct style" result, the action author is free to write
     a building rule invoking the builder at any time. *)
-val seq : 'b action_result -> ('b -> 'a action_result) -> 'a action_result
+
+val return : 'a -> 'a action_result
+val bind : 'b action_result -> ('b -> 'a action_result) -> 'a action_result
 (** in an "indirect style" result, the action author can write his
     code in inverted, continuation-passing style. This allows the
     build engine to obtain fine-grained information about the dynamic
     dependencies, and schedule compilation better (parallelization,
     etc.). *)
+
 val build_order : build_order -> unit action_result
-val combine : 'a action_result list -> 'a list action_result
+
+val merge : 'a action_result list -> 'a list action_result
+(** to enable parallelization, we must be able to merge rule
+    descriptions that can be executed in parallel *)
+  
+val annot : rule_id -> 'a action_result -> 'a action_result
+(** to correctly remember dynamic dependencies, we must be able to
+    add the rule identity information to the rule description, after
+    the fact. *)
 
 type 'a gen_rule
 
@@ -56,6 +71,8 @@ val name_of_rule : 'a gen_rule -> string
 val deps_of_rule : 'a gen_rule -> Pathname.t list
 val prods_of_rule : 'a gen_rule -> 'a list
 val doc_of_rule : 'a gen_rule -> string option
+
+val id_of_rule : rule -> rule_id
 
 val indirect_rule : string ->
   ?tags:string list ->

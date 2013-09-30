@@ -153,8 +153,8 @@ let prepare_compile ml =
 
 let byte_compile_ocaml_interf mli cmi env (* build *) =
   let mli = env mli and cmi = env cmi in
-  seq (prepare_compile mli) & fun () ->
-  final (ocamlc_c (tags_of_pathname mli++"interf") mli cmi)
+  bind (prepare_compile mli) & fun () ->
+  return (ocamlc_c (tags_of_pathname mli++"interf") mli cmi)
 
 (* given that .cmi can be built from either ocamlc and ocamlopt, this
    "agnostic" rule chooses either compilers depending on whether the
@@ -163,18 +163,18 @@ let byte_compile_ocaml_interf mli cmi env (* build *) =
    available, not ocamlc. *)
 let compile_ocaml_interf mli cmi env =
   let mli = env mli and cmi = env cmi in
-  seq (prepare_compile mli) & fun () ->
+  bind (prepare_compile mli) & fun () ->
   let tags = tags_of_pathname mli++"interf" in
   let comp_c = if Tags.mem "native" tags then ocamlopt_c else ocamlc_c in
-  final (comp_c tags mli cmi)
+  return (comp_c tags mli cmi)
 
 let byte_compile_ocaml_implem ?tag ml cmo env =
   let ml = env ml and cmo = env cmo in
-  seq (prepare_compile ml) & fun () ->
+  bind (prepare_compile ml) & fun () ->
   let tags =
     Tags.union (tags_of_pathname ml) (tags_of_pathname cmo)
     ++"implem"+++tag in
-  final (ocamlc_c tags ml cmo)
+  return (ocamlc_c tags ml cmo)
 
 let cache_prepare_link = Hashtbl.create 107
 let rec prepare_link tag cmx extensions =
@@ -197,7 +197,7 @@ let rec prepare_link tag cmx extensions =
       modules
   in
   if modules = [] || Hashtbl.mem cache_prepare_link key
-  then final ()
+  then return ()
   else begin
     let () = Hashtbl.add cache_prepare_link key true in
     let recursive_deps = ref [] in
@@ -209,22 +209,22 @@ let rec prepare_link tag cmx extensions =
            | `mandatory, Bad exn -> if not !Options.ignore_auto then raise exn
            | `just_try, Bad _ -> ())
       in List.map module_order modules in
-    seq (build_order (modules_build_order)) & fun () ->
+    bind (build_order (modules_build_order)) & fun () ->
     let deps_action_results =
       List.map (fun p -> prepare_link tag p extensions) !recursive_deps in
-    seq (combine (deps_action_results)) & fun results ->
-    final (List.iter (fun () -> ()) results)
+    bind (merge deps_action_results) & fun results ->
+    return (List.iter (fun () -> ()) results)
   end
 
 let native_compile_ocaml_implem ?tag ?(cmx_ext="cmx") ml env =
   let ml = env ml in
   let cmi = Pathname.update_extensions "cmi" ml in
   let cmx = Pathname.update_extensions cmx_ext ml in
-  seq (prepare_link cmx cmi [cmx_ext; "cmi"]) & fun () ->
+  bind (prepare_link cmx cmi [cmx_ext; "cmi"]) & fun () ->
   let tags =
     Tags.union (tags_of_pathname ml) (tags_of_pathname cmx)
     ++"implem"+++tag in
-  final (ocamlopt_c tags ml cmx)
+  return (ocamlopt_c tags ml cmx)
 
 let libs_of_use_lib tags =
   Tags.fold begin fun tag acc ->
@@ -243,8 +243,8 @@ let prepare_libs cma_ext a_ext out =
   let () = dprintf 10 "prepare_libs: %S -> %a" out pp_l libs1 in
   let libs = List.map (fun x -> x-.-cma_ext) libs1 in
   let libs2 = List.map (fun lib -> [lib-.-a_ext]) libs1 in
-  seq (build_order (ignore_good_order libs2)) & fun () ->
-  final libs
+  bind (build_order (ignore_good_order libs2)) & fun () ->
+  return libs
 
 module Ocaml_dependencies_input = struct
   let fold_dependencies = Resource.Cache.fold_dependencies
@@ -258,7 +258,7 @@ let caml_transitive_closure = Ocaml_dependencies.caml_transitive_closure
 let link_one_gen linker tagger cmX out env =
   let cmX = env cmX and out = env out in
   let tags = tagger (tags_of_pathname out) in
-  final (linker tags [cmX] out)
+  return (linker tags [cmX] out)
 
 let link_gen cmX_ext cma_ext a_ext extensions linker tagger cmX out env =
   let cmX = env cmX and out = env out in
@@ -268,12 +268,12 @@ let link_gen cmX_ext cma_ext a_ext extensions linker tagger cmX out env =
     let results = ref [] in
     let record dep =
       ([dep], fun result -> results := Outcome.good result :: !results) in
-    seq (build_order (List.map record dyndeps)) & fun () ->
-    final !results in
-  seq dyndeps_action & fun dyndeps ->
+    bind (build_order (List.map record dyndeps)) & fun () ->
+    return !results in
+  bind dyndeps_action & fun dyndeps ->
   let cmi = Pathname.update_extensions "cmi" cmX in
-  seq (prepare_link cmX cmi extensions) & fun () ->
-  seq (prepare_libs cma_ext a_ext out) & fun libs ->
+  bind (prepare_link cmX cmi extensions) & fun () ->
+  bind (prepare_libs cma_ext a_ext out) & fun libs ->
   let hidden_packages = List.map (fun x -> x-.-cmX_ext) !hidden_packages in
   let deps =
     caml_transitive_closure
@@ -288,7 +288,7 @@ let link_gen cmX_ext cma_ext a_ext extensions linker tagger cmX out env =
 
   if deps = [] then failwith "Link list cannot be empty";
   let () = dprintf 6 "link: %a -o %a" print_string_list deps Pathname.print out in
-  final (linker (tags++"dont_link_with") deps out)
+  return (linker (tags++"dont_link_with") deps out)
 
 let byte_link_gen = link_gen "cmo" "cma" "cma" ["cmo"; "cmi"]
 
@@ -336,21 +336,21 @@ let link_units table extensions cmX_ext cma_ext a_ext linker tagger contents_lis
   let order =
     let singleton x = [x] in
     ignore_good_order (List.map singleton (Command.deps_of_tags tags)) in
-  seq (build_order order) & fun () ->
+  bind (build_order order) & fun () ->
   let dir =
     let dir1 = Pathname.remove_extensions cmX in
     if Resource.exists_in_source_dir dir1 then dir1
     else Pathname.dirname cmX in
   let include_dirs = Pathname.include_dirs_of dir in
   let extension_keys = List.map fst extensions in
-  seq (prepare_libs cma_ext a_ext cmX) & fun libs ->
+  bind (prepare_libs cma_ext a_ext cmX) & fun libs ->
   let to_update = ref [] in
   let make_order module_name =
     (expand_module include_dirs module_name extension_keys,
      function
        | Bad exn -> raise exn
        | Good p -> to_update := p :: !to_update) in
-  seq (build_order (List.map make_order contents_list)) & fun () ->
+  bind (build_order (List.map make_order contents_list)) & fun () ->
   let module_paths = !to_update in
   let update_order p =
     (* List.iter ignore_good (build [[Pathname.update_extensions ext p]]) *)
@@ -360,7 +360,7 @@ let link_units table extensions cmX_ext cma_ext a_ext linker tagger contents_lis
       | [x] -> [[x], ignore_good]
       | _::_::_ -> failwith "Rule.link_units: case not implemented yet" in
   let total_order = List.concat & List.map update_order module_paths in
-  seq (build_order total_order) & fun () ->
+  bind (build_order total_order) & fun () ->
   Hashtbl.replace table cmX module_paths;
   let hidden_packages = List.map (fun x -> x-.-cmX_ext) !hidden_packages in
   let deps =
@@ -376,7 +376,7 @@ let link_units table extensions cmX_ext cma_ext a_ext linker tagger contents_lis
   let is_not_stdlib x = x <> stdlib in
   let deps = List.filter is_not_stdlib deps in
 
-  final (linker tags deps cmX)
+  return (linker tags deps cmX)
 
 let link_modules = link_units library_index
 let pack_modules = link_units package_index
