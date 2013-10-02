@@ -33,6 +33,10 @@ and 'a action_result
 
 val run_action_result : builder -> 'a action_result -> 'a
 
+type indirect_builder = Pathname.t list -> build_result action_result
+
+val unroll_result : indirect_builder -> 'a action_result -> 'a action_result
+
 val direct : (builder -> 'a) -> 'a action_result
 (** in a "direct style" result, the action author is free to write
     a building rule invoking the builder at any time. *)

@@ -29,8 +29,128 @@ let failed target backtrace =
   Resource.Cache.resource_failed target;
   raise (Failed backtrace)
 
+let extract_failed = function
+  | Failed trace -> trace
+  | exn -> raise exn
+
 let rec pp_repeat f (n, s) =
   if n > 0 then (pp_print_string f s; pp_repeat f (n - 1, s))
+
+let return = Rule.return
+let bind = Rule.bind
+
+let sequence
+: 'a 'b . ('a, 'b) Outcome.t Rule.action_result list
+-> ('a list, 'b) Outcome.t Rule.action_result
+=
+  let rec seq results = function
+    | [] -> return (Good (List.rev results))
+    | x::xs ->
+      bind x (function
+        | Good res -> seq (res::results) xs
+        | Bad _ as bad -> return bad)
+  in fun res -> seq [] res
+
+let sequential_alternative
+:  'a 'b . ('a, 'b) Outcome.t Rule.action_result list
+-> ('a, 'b list) Outcome.t Rule.action_result
+=
+  let rec alt failures = function
+    | [] -> return (Bad (List.rev failures))
+    | x::xs ->
+      bind x (function
+        | Good _ as good -> return good
+        | Bad fail -> alt (fail::failures) xs)
+  in fun res -> alt [] res
+
+(* Targets must be normalized pathnames.
+ * Recursive calls are either on input targets
+ * or dependencies of these targets (returned by Rule.deps_of_rule).
+ *)
+let rec indirect_self depth on_the_go_orig target =
+  let rules = Rule.get_rules () in
+  let on_the_go = target :: on_the_go_orig in
+
+  dprintf 4 "==%a> %a" pp_repeat (depth, "==") Resource.print target;
+  if List.mem target on_the_go_orig then
+    raise (Circular(target, on_the_go_orig));
+  match Resource.Cache.resource_state target with
+  | Resource.Cache.Bbuilt ->
+    dprintf 5 "%a already built" Resource.print target;
+    return (Good ())
+  | Resource.Cache.Bcannot_be_built ->
+    dprintf 5 "%a already failed" Resource.print target;
+    return (Bad (Failed (Leaf target)))
+  | Resource.Cache.Bsuspension(s) ->
+    dprintf 5 "%a was suspended -> resuming" Resource.print target;
+    return begin
+      try Good (Resource.Cache.resume_suspension s)
+      with exn -> Bad exn
+    end
+  | Resource.Cache.Bnot_built_yet ->
+    if not (Pathname.is_relative target) && Pathname.exists target then
+      if Resource.Cache.external_is_up_to_date target
+      then return (Good ())
+      else begin
+        (* perhaps the error can be refined *)
+        Resource.Cache.resource_failed target;    
+        return (Bad (Failed (Leaf target)))
+      end
+    else
+    if Resource.exists_in_source_dir target then
+      return (Good (Resource.Cache.import_in_build_dir target))
+    else
+      let matching_rules = List.filter_opt (Rule.can_produce target) rules in
+      let try_rule r =
+        let make_dep dep =
+          bind (indirect_self (depth + 1) on_the_go dep) & function
+            | Bad _ as bad -> return bad
+            | Good _ as good ->
+              Resource.Cache.resume_resource dep;
+              return good
+        in
+        bind (sequence (List.map make_dep (Rule.deps_of_rule r))) & function
+          | Bad (Failed backtrace as fail) ->
+            let () =
+              match backtrace with
+                | Depth (top_prod, _) ->
+                  Resource.Cache.clear_resource_failed top_prod
+                | Target _ | Choice _ | Leaf _ -> ()
+            in
+            return (Bad fail)
+          | Bad exn -> return (Bad exn)
+          | Good unit_list ->
+            List.iter (fun () -> ()) unit_list;
+            let indirect_builder choices =
+              let build dep =
+                bind (indirect_self (depth + 1) on_the_go dep) & function
+                  | Bad bad -> return (Bad bad)
+                  | Good () -> return (Good dep) 
+                    (* indicate which of the possible filenames worked *)
+              in
+              bind (sequential_alternative (List.map build choices)) & function
+                | Good result -> return (Good result)
+                | Bad traces ->
+                  try return (Bad (Failed
+                        (Choice (List.map extract_failed traces))))
+                  with exn -> return (Bad exn)
+            in
+            Rule.unroll_result indirect_builder &
+            bind (Rule.indirect_call r) & fun () ->
+            (* todo support something akin to Rule.Failed
+               for user-decided failure *)
+            return (Good ())
+      in
+      bind (sequential_alternative (List.map try_rule matching_rules)) & function
+        | Good good -> return (Good good)
+        | Bad [] ->
+          Resource.Cache.resource_failed target;
+          return (Bad (Failed (Leaf target)))
+        | Bad traces ->
+          Resource.Cache.resource_failed target;
+          try return (Bad (Failed (Depth
+                (target, Choice (List.map extract_failed traces)))))
+          with exn -> return (Bad exn)
 
 (* Targets must be normalized pathnames.
  * Recursive calls are either on input targets
@@ -67,7 +187,11 @@ let rec self depth on_the_go_orig target =
         | r :: rs ->
             try
               List.iter (force_self (depth + 1) on_the_go) (Rule.deps_of_rule r);
-              try Rule.call (self_firsts (depth + 1) on_the_go) r
+              try
+                let rule_action = Rule.indirect_call r in
+                Rule.run_action_result
+                  (self_firsts (depth + 1) on_the_go)
+                  rule_action;
               with Rule.Failed -> raise (Failed (Leaf target))
             with Failed backtrace ->
               if rs = [] then failed target (Depth (target, Choice (backtrace :: backtraces)))

@@ -77,6 +77,11 @@ let rec annot id = function
     let update (oldid, dep, check) = (update_id oldid id, dep, check) in
     Order (List.map update deps, fun () -> annot id (next ()))
 
+let maybe_annot maybe_id action =
+  match maybe_id with
+    | None -> action
+    | Some id -> annot id action
+
 let add_dep {id_name = name; id_prods = prods} = function
   | Bad _ -> ()
   | Good result ->
@@ -143,6 +148,26 @@ let merge action_results =
       merge (returns @ already_returned) (after_orders @ after_directs)
   in
   merge [] action_results
+
+type indirect_builder = Pathname.t list -> build_result action_result
+
+let rec unroll_result indirect_builder = function
+  | Return x -> Return x
+  | Direct (id, f) ->
+    Direct (id, fun build -> unroll_result indirect_builder (f build))
+  | Order (deps, next) ->
+    unroll_result indirect_builder &
+    let action (id, dep, check) =
+      dprintf 10 "unrolling %s for %s"
+        (String.concat "|" dep)
+        (match id with None -> "unknown rule"
+          | Some {id_name; id_prods} ->
+            Printf.sprintf "%S->%s" id_name (String.concat "&" id_prods));
+      bind (maybe_annot id (indirect_builder dep)) & fun result ->
+      return (check result) in
+    bind (merge (List.map action deps)) & fun units ->
+      List.iter (fun () -> ()) units;
+      next ()
 
 type action = env -> builder -> Command.t
 type indirect_action = Command.t gen_action
