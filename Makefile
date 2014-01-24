@@ -10,17 +10,14 @@
 #                                                                       #
 #########################################################################
 
-include ../config/Makefile
-
-ROOTDIR   = ..
-OCAMLRUN  = $(ROOTDIR)/boot/ocamlrun
-OCAMLC    = $(OCAMLRUN) $(ROOTDIR)/ocamlc -nostdlib -I $(ROOTDIR)/stdlib
-OCAMLOPT  = $(OCAMLRUN) $(ROOTDIR)/ocamlopt -nostdlib -I $(ROOTDIR)/stdlib
-OCAMLDEP  = $(OCAMLRUN) $(ROOTDIR)/tools/ocamldep
-OCAMLLEX  = $(OCAMLRUN) $(ROOTDIR)/boot/ocamllex
-CP        = cp
-COMPFLAGS= -warn-error A -w L -w R -w Z -I ../otherlibs/$(UNIXLIB) -safe-string
-LINKFLAGS= -I ../otherlibs/$(UNIXLIB)
+OCAMLC   = ocamlfind ocamlc
+OCAMLOPT = ocamlfind ocamlopt
+OCAMLDEP = ocamlfind ocamldep
+OCAMLLEX = ocamllex
+CP       = cp
+UNIXLIB  = $(shell ocamlfind query unix)
+COMPFLAGS= -warn-error A -w L -w R -w Z -I $(UNIXLIB) -safe-string
+LINKFLAGS= -I $(UNIXLIB)
 
 PACK_CMO=\
   const.cmo \
@@ -97,6 +94,8 @@ allopt: ocamlbuild.native ocamlbuildlib.cmxa
 
 # The executables
 
+$(EXTRA_CMO:.cmo=.mli): ocamlbuild_pack.cmo
+
 ocamlbuild.byte: ocamlbuild_pack.cmo $(EXTRA_CMO) ocamlbuild.cmo
 	$(OCAMLC) $(LINKFLAGS) -o ocamlbuild.byte \
           unix.cma ocamlbuild_pack.cmo $(EXTRA_CMO) ocamlbuild.cmo
@@ -132,8 +131,14 @@ ocamlbuild_pack.cmx: $(PACK_CMX)
 	$(OCAMLOPT) -pack $(PACK_CMX) -o ocamlbuild_pack.cmx
 
 # The config file
-
-ocamlbuild_config.ml: ../config/Makefile
+BINDIR=
+LIBDIR=
+A=a
+O=o
+SO=so
+EXE=
+SUPPORTS_SHARED_LIBRARIES=true
+ocamlbuild_config.ml:
 	(echo 'let bindir = "$(BINDIR)"'; \
          echo 'let libdir = "$(LIBDIR)"'; \
          echo 'let supports_shared_libraries = $(SUPPORTS_SHARED_LIBRARIES)';\
@@ -148,16 +153,11 @@ beforedepend:: ocamlbuild_config.ml
 
 # The lexers
 
-lexers.ml: lexers.mll
-	$(OCAMLLEX) lexers.mll
 clean::
 	rm -f lexers.ml
-beforedepend:: lexers.ml
-
-glob_lexer.ml: glob_lexer.mll
-	$(OCAMLLEX) glob_lexer.mll
-clean::
 	rm -f glob_lexer.ml
+
+beforedepend:: lexers.ml
 beforedepend:: glob_lexer.ml
 
 # Installation
@@ -179,7 +179,7 @@ installopt_really:
 
 # The generic rules
 
-.SUFFIXES: .ml .mli .cmo .cmi .cmx
+.SUFFIXES: .ml .mli .mll .cmo .cmi .cmx
 
 .ml.cmo:
 	$(OCAMLC) $(COMPFLAGS) -c $<
@@ -189,6 +189,9 @@ installopt_really:
 
 .ml.cmx:
 	$(OCAMLOPT) -for-pack Ocamlbuild_pack $(COMPFLAGS) -c $<
+
+.mll.ml:
+	$(OCAMLLEX) $<
 
 clean::
 	rm -f *.cm? *.$(O) *.cmxa *.$(A)
