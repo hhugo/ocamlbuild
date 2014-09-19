@@ -1,0 +1,9 @@
+opam-version: "1"
+version: "dev"
+build: [
+  [make "all" "allopt"]
+]
+depends: [
+  "base-unix"
+  "ocamlfind"
+]

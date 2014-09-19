@@ -1,0 +1,25 @@
+bin: [
+  "ocamlbuild.byte" {"ocamlbuild"}
+  "ocamlbuild.byte" {"ocamlbuild.byte"}
+  "?ocamlbuild.native" {"ocamlbuild"}
+  "?ocamlbuild.native" {"ocamlbuild.native"}
+]
+lib: [
+  "ocamlbuildlib.cma"
+  "ocamlbuild.cmo"
+  "ocamlbuild_pack.cmi"
+  "ocamlbuild_plugin.cmi"
+  "ocamlbuild_executor.cmi"
+  "ocamlbuild_unix_plugin.cmi"
+  "?ocamlbuildlib.cmxa"
+  "?ocamlbuildlib.a"
+  "?ocamlbuild.cmx"
+  "?ocamlbuild.o"
+  "?ocamlbuild_pack.cmx"
+  "?ocamlbuild_plugin.cmx"
+  "?ocamlbuild_executor.cmx"
+  "?ocamlbuild_unix_plugin.cmx"
+  "?ocamlbuild_plugin.o"
+  "?ocamlbuild_executor.o"
+  "?ocamlbuild_unix_plugin.o"
+]
