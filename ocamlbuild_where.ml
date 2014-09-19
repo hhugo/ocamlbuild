@@ -15,5 +15,5 @@ let libdir = ref begin
   Filename.concat
     (try Sys.getenv "OCAMLLIB"
      with Not_found -> Ocamlbuild_config.libdir)
-    "ocamlbuild"
+    "ocamlbuild-ng"
 end;;

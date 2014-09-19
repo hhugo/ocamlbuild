@@ -13,7 +13,7 @@
 
 (* Original author: Nicolas Pouillard *)
 
-let version = "ocamlbuild "^(Sys.ocaml_version);;
+let version = "ocamlbuild-ng "^(Sys.ocaml_version);;
 
 type command_spec = Command.spec
 
