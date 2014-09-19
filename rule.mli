@@ -54,7 +54,7 @@ val build_order : build_order -> unit action_result
 val merge : 'a action_result list -> 'a list action_result
 (** to enable parallelization, we must be able to merge rule
     descriptions that can be executed in parallel *)
-  
+
 val annot : rule_id -> 'a action_result -> 'a action_result
 (** to correctly remember dynamic dependencies, we must be able to
     add the rule identity information to the rule description, after
@@ -86,6 +86,7 @@ val indirect_rule : string ->
   ?dep:string ->
   ?stamp:string ->
   ?insert:[`top | `before of string | `after of string | `bottom] ->
+  ?doc:string ->
   Command.t gen_action -> unit
 
 val rule : string ->

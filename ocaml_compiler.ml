@@ -148,7 +148,7 @@ let prepare_compile ml =
                 <dir1> or <dir2>: traverse@,\
               @]"
           );
-    | `just_try, Bad _ -> ()
+    | `just_try, Bad _ -> ())
   in build_order (List.map module_build_order modules)
 
 let byte_compile_ocaml_interf mli cmi env (* build *) =
