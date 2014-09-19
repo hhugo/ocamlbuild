@@ -5,6 +5,7 @@ bin: [
   "?ocamlbuild.native" {"ocamlbuild.native"}
 ]
 lib: [
+  "META"
   "ocamlbuildlib.cma"
   "ocamlbuild.cmo"
   "ocamlbuild_pack.cmi"
