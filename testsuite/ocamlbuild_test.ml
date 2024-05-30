@@ -482,7 +482,7 @@ let run ~root =
 
   let verbose =
     try ignore (Sys.getenv "VERBOSE"); true
-    with Not_found -> false
+    with Not_found -> true
   in
 
   let command opts args =
