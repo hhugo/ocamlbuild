@@ -275,13 +275,27 @@ let sys_file_exists x =
       try Array.iter (fun x -> if x = basename then raise Exit) a; false
       with Exit -> true
 
-let sys_command =
+let quote_cmd s =
+  let b = Buffer.create (String.length s + 20) in
+  String.iter
+    (fun c ->
+       match c with
+       | '(' | ')' | '!' | '^' | '%' | '\"' | '<' | '>' | '&' | '|' ->
+         Buffer.add_char b '^'; Buffer.add_char b c
+       | _ ->
+         Buffer.add_char b c)
+    s;
+  Buffer.contents b
+
+let prepare_command =
   match Sys.win32 with
-  | true -> fun cmd ->
-      if cmd = "" then 0 else
-      let cmd = "bash --norc -c " ^ Filename.quote cmd in
-      Sys.command cmd
-  | false -> fun cmd -> if cmd = "" then 0 else Sys.command cmd
+  | true ->
+    fun cmd -> quote_cmd ("bash --norc -c " ^ Filename.quote cmd)
+  | false ->
+    fun cmd -> cmd
+
+let sys_command cmd =
+  if cmd = "" then 0 else Sys.command (prepare_command cmd)
 
 (* FIXME warning fix and use Filename.concat *)
 let filename_concat x y =

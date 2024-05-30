@@ -145,7 +145,7 @@ let search_in_path cmd =
 
 (*** string_of_command_spec{,_with_calls *)
 let string_of_command_spec_with_calls call_with_tags call_with_target resolve_virtuals spec =
-  let rec aux b spec =
+  let rec aux b encode spec =
     let first = ref true in
     let put_space () =
       if !first then
@@ -154,7 +154,7 @@ let string_of_command_spec_with_calls call_with_tags call_with_target resolve_vi
         Buffer.add_char b ' '
     in
     let put_filename p =
-      Buffer.add_string b (Shell.quote_filename_if_needed p)
+      Buffer.add_string b (encode p)
     in
     let rec do_spec = function
       | N -> ()
@@ -163,14 +163,32 @@ let string_of_command_spec_with_calls call_with_tags call_with_target resolve_vi
       | P p -> put_space (); put_filename p
       | Px u -> put_space (); put_filename u; call_with_target u
       | V v -> if resolve_virtuals then do_spec (virtual_solver v)
-               else (put_space (); Printf.bprintf b "<virtual %s>" (Shell.quote_filename_if_needed v))
-      | S l -> List.iter do_spec l
+              else (put_space (); Printf.bprintf b "<virtual %s>" (encode v))
+      | S l -> do_specs l
       | T tags -> call_with_tags tags; do_spec (!tag_handler tags)
       | Quote s ->
         put_space ();
         let buf = Buffer.create 256 in
-        aux buf s;
+        aux buf encode s;
         put_filename (Buffer.contents buf)
+    and do_specs = function
+      | [] -> ()
+      | (A "-pp" as pp) :: Quote q :: rest ->
+        do_spec pp;
+        let first = ref true in
+        let buf = Buffer.create 256 in
+        aux buf (fun x ->
+          if (Sys.win32 && !first && (first := false; String.contains x '/')) || not (Shell.is_simple_filename x)
+          then
+          (My_std.quote_cmd ("\"" ^ String.escaped x ^ "\""))
+        else x) q;
+        let c = Buffer.contents buf in
+        put_space ();
+        Buffer.add_string b ("'" ^ c ^ "'");
+        do_specs rest
+      | x :: rest ->
+        do_spec x;
+        do_specs rest
     in
     do_spec spec
   in
@@ -179,7 +197,7 @@ let string_of_command_spec_with_calls call_with_tags call_with_target resolve_vi
    * quote-handling is to prepend an empty string before the command name. *)
   if Sys.win32 then
     Buffer.add_string b "''";
-  aux b spec;
+  aux b (fun x -> Shell.quote_filename_if_needed x) spec;
   Buffer.contents b
 
 let string_of_command_spec x = string_of_command_spec_with_calls ignore ignore false x

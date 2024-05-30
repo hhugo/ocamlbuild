@@ -136,11 +136,8 @@ let execute
   (* ***)
   (*** add_job *)
   let add_job cmd rest result id =
-    let cmd =
-      if Sys.win32
-      then "bash --norc -c " ^ Filename.quote cmd
-      else cmd
-    in
+    let cmd = My_std.prepare_command cmd in
+    (* Printf.eprintf "Command %s\n%!" cmd; *)
     (*display begin fun oc -> fp oc "Job %a is %s\n%!" print_job_id id cmd; end;*)
     let (stdout', stdin', stderr') = open_process_full cmd env in
     incr jobs_active;
