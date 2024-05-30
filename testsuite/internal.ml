@@ -1,5 +1,59 @@
 #use "internal_test_header.ml";;
 
+
+let () = test "preprocess"
+    ~description:"Check that preprocessor works"
+    ~requirements:ocamlopt_available
+    ~options:[]
+    ~tree:[
+      T.f "main.ml" ~content:{|
+let () = Printf.printf "line %d\n" __LINE__
+|};
+      T.f "preprocessor.ml" ~content:{|
+let () =
+  let all = String.concat "\n" (Array.to_list Sys.argv) in
+  let input = Sys.argv.(3) in
+  let txt = Sys.argv.(1) in
+  let shift = try int_of_string (Sys.argv.(2)) with _ -> 1 in
+  let ic = open_in input in
+  for i = 0 to shift do
+    print_endline (Printf.sprintf "(* shift lines by one, %s *)" txt);
+  done;
+  (try
+  while true do
+    let l = input_line ic in
+    print_endline l;
+  done;
+  with End_of_file -> ());
+  print_endline (Printf.sprintf {txt|let () = Printf.eprintf %S|txt} all)
+
+|};
+      T.f "myocamlbuild.ml" ~content:{|
+open Ocamlbuild_plugin
+let () =
+  dispatch begin function
+  | After_rules ->
+    dep ["mypreprocessor"] ["preprocessor.exe"];
+    flag ["ocaml"; "pp"; "mypreprocessor"] (S [(if Sys.win32
+                                               then Sh {p|.\preprocessor.exe|p}
+                                               else P "./preprocessor.exe");
+                                               A "withoutspace";
+                                               A "2"]);
+    rule "native to exe"
+    ~prods:["%.exe"]
+    ~dep:"%.native"
+    (fun env _build ->
+      let nat = env "%.native" and exe = env "%.exe" in
+      Cmd(S[A "cp"; A nat; A exe]))
+  | _ -> ()
+  end
+|};
+      T.f "_tags" ~content:{|
+<main.ml>: mypreprocessor
+|}]
+    ~targets:("main.native", [])
+    ();;
+
 let () = test "BasicNativeTree"
   ~options:[`no_ocamlfind]
   ~description:"Output tree for native compilation"

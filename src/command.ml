@@ -144,12 +144,12 @@ let search_in_path cmd =
     cmd
 
 (*** string_of_command_spec{,_with_calls *)
-let rec string_of_command_spec_with_calls call_with_tags call_with_target resolve_virtuals spec =
-  let self = string_of_command_spec_with_calls call_with_tags call_with_target resolve_virtuals in
+let rec string_of_command_spec_with_calls inside_quote call_with_tags call_with_target resolve_virtuals spec =
+  let self = string_of_command_spec_with_calls true call_with_tags call_with_target resolve_virtuals in
   let b = Buffer.create 256 in
   (* The best way to prevent bash from switching to its windows-style
    * quote-handling is to prepend an empty string before the command name. *)
-  if Sys.win32 then
+  if Sys.win32 && not inside_quote  then
     Buffer.add_string b "''";
   let first = ref true in
   let put_space () =
@@ -176,13 +176,13 @@ let rec string_of_command_spec_with_calls call_with_tags call_with_target resolv
   do_spec spec;
   Buffer.contents b
 
-let string_of_command_spec x = string_of_command_spec_with_calls ignore ignore false x
+let string_of_command_spec x = string_of_command_spec_with_calls false ignore ignore false x
 
 let string_target_and_tags_of_command_spec spec =
   let rtags = ref Tags.empty in
   let rtarget = ref "" in
   let union_rtags tags = rtags := Tags.union !rtags tags in
-  let s = string_of_command_spec_with_calls union_rtags ((:=) rtarget) true spec in
+  let s = string_of_command_spec_with_calls false union_rtags ((:=) rtarget) true spec in
   let target = if !rtarget = "" then s else !rtarget in
   s, target, !rtags
 
