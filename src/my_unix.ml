@@ -58,8 +58,13 @@ let at_exit_once callback =
   end
 
 let run_and_open s kont =
-  let s = My_std.prepare_command s in
-  let ic = Unix.open_process_in s in
+  let ic =
+    if Sys.win32
+    then
+      let shell = "bash" in
+      let args = [| shell; "--norc"; "-c"; s |] in
+      Unix.open_process_args_in args.(0) args
+    else Unix.open_process_in s in
   let close () =
     match Unix.close_process_in ic with
     | Unix.WEXITED 0 -> ()

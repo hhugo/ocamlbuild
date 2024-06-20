@@ -287,15 +287,18 @@ let quote_cmd s =
     s;
   Buffer.contents b
 
-let prepare_command =
-  match Sys.win32 with
-  | true ->
-    fun cmd -> quote_cmd ("bash --norc -c " ^ Filename.quote cmd)
-  | false ->
-    fun cmd -> cmd
-
 let sys_command cmd =
-  if cmd = "" then 0 else Sys.command (prepare_command cmd)
+  if cmd = "" then 0 else
+  if Sys.win32
+  then
+    let shell = "bash" in
+    let args = [| shell; "--norc"; "-c"; cmd |] in
+    let oc = Unix.open_process_args_out args.(0) args in
+    match Unix.close_process_out oc with
+    | WEXITED x -> x
+    | WSIGNALED _ -> 2
+    | WSTOPPED _ -> 2
+  else Sys.command cmd
 
 (* FIXME warning fix and use Filename.concat *)
 let filename_concat x y =

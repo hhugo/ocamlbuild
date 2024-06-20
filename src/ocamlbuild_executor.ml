@@ -136,10 +136,15 @@ let execute
   (* ***)
   (*** add_job *)
   let add_job cmd rest result id =
-    let cmd = My_std.prepare_command cmd in
     (* Printf.eprintf "Command %s\n%!" cmd; *)
     (*display begin fun oc -> fp oc "Job %a is %s\n%!" print_job_id id cmd; end;*)
-    let (stdout', stdin', stderr') = open_process_full cmd env in
+    let (stdout', stdin', stderr') =
+      if Sys.win32
+      then
+        let shell = "bash" in
+        let args = [| shell; "--norc"; "-c"; cmd |] in
+        open_process_args_full args.(0) args [||]
+      else open_process_full cmd env in
     incr jobs_active;
     if not Sys.win32 then begin
       set_nonblock (doi stdout');

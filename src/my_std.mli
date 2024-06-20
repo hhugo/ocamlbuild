@@ -70,5 +70,4 @@ val lexbuf_of_string : ?name:string -> string -> Lexing.lexbuf
 val split_ocaml_version : (int * int * int * string) option
 (** (major, minor, patchlevel, rest) *)
 
-val prepare_command : string -> string
 val quote_cmd : string -> string
