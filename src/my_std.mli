@@ -71,3 +71,4 @@ val split_ocaml_version : (int * int * int * string) option
 (** (major, minor, patchlevel, rest) *)
 
 val quote_cmd : string -> string
+val prepare_command_for_windows : string -> string array

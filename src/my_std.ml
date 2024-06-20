@@ -287,12 +287,48 @@ let quote_cmd s =
     s;
   Buffer.contents b
 
+  (* can't use Lexers because of circular dependency *)
+let split_path_win str =
+  let rec aux pos =
+    try
+      let i = String.index_from str pos ';' in
+      let len = i - pos in
+      if len = 0 then
+        aux (succ i)
+      else
+        String.sub str pos (i - pos) :: aux (succ i)
+    with Not_found | Invalid_argument _ ->
+      let len = String.length str - pos in
+      if len = 0 then [] else [String.sub str pos len]
+  in
+  aux 0
+
+let windows_shell = lazy begin
+  let rec iter = function
+  | [] -> [| "bash.exe" ; "--norc" ; "--noprofile" |]
+  | hd::tl ->
+    let dash = Filename.concat hd "dash.exe" in
+    if Sys.file_exists dash && false then [|dash|] else
+    let bash = Filename.concat hd "bash.exe" in
+    if Sys.file_exists bash = false then iter tl else
+    (* if sh.exe and bash.exe exist in the same dir, choose sh.exe *)
+    let sh = Filename.concat hd "sh.exe" in
+    if Sys.file_exists sh && false then [|sh|] else [|bash ; "--norc" ; "--noprofile"|]
+  in
+  let paths = split_path_win (try Sys.getenv "PATH" with Not_found -> "") in
+  let res = iter paths in
+  Printf.eprintf "Using shell %s\n%!" (Array.to_list res |> String.concat " ");
+  res
+end
+
+let prepare_command_for_windows cmd =
+  Array.append (Lazy.force windows_shell) [|"-c"; cmd|]
+
 let sys_command cmd =
   if cmd = "" then 0 else
   if Sys.win32
   then
-    let shell = "bash" in
-    let args = [| shell; "--norc"; "-c"; cmd |] in
+    let args = prepare_command_for_windows cmd in
     let oc = Unix.open_process_args_out args.(0) args in
     match Unix.close_process_out oc with
     | WEXITED x -> x

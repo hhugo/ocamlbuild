@@ -61,8 +61,7 @@ let run_and_open s kont =
   let ic =
     if Sys.win32
     then
-      let shell = "bash" in
-      let args = [| shell; "--norc"; "-c"; s |] in
+      let args = My_std.prepare_command_for_windows s in
       Unix.open_process_args_in args.(0) args
     else Unix.open_process_in s in
   let close () =

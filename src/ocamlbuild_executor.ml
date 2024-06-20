@@ -141,8 +141,7 @@ let execute
     let (stdout', stdin', stderr') =
       if Sys.win32
       then
-        let shell = "bash" in
-        let args = [| shell; "--norc"; "-c"; cmd |] in
+        let args = My_std.prepare_command_for_windows cmd in
         open_process_args_full args.(0) args [||]
       else open_process_full cmd env in
     incr jobs_active;
