@@ -308,16 +308,16 @@ let windows_shell = lazy begin
   | [] -> [| "bash.exe" ; "--norc" ; "--noprofile" |]
   | hd::tl ->
     let dash = Filename.concat hd "dash.exe" in
-    if Sys.file_exists dash && false then [|dash|] else
+    if Sys.file_exists dash then [|dash|] else
     let bash = Filename.concat hd "bash.exe" in
-    if Sys.file_exists bash = false then iter tl else
+    if not (Sys.file_exists bash) then iter tl else
     (* if sh.exe and bash.exe exist in the same dir, choose sh.exe *)
     let sh = Filename.concat hd "sh.exe" in
-    if Sys.file_exists sh && false then [|sh|] else [|bash ; "--norc" ; "--noprofile"|]
+    if Sys.file_exists sh then [|sh|] else [|bash ; "--norc" ; "--noprofile"|]
   in
   let paths = split_path_win (try Sys.getenv "PATH" with Not_found -> "") in
   let res = iter paths in
-  Printf.eprintf "Using shell %s\n%!" (Array.to_list res |> String.concat " ");
+  if false then Printf.eprintf "Using shell %s\n%!" (Array.to_list res |> String.concat " ");
   res
 end
 

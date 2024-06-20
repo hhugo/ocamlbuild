@@ -142,7 +142,7 @@ let execute
       if Sys.win32
       then
         let args = My_std.prepare_command_for_windows cmd in
-        open_process_args_full args.(0) args [||]
+        open_process_args_full args.(0) args (Unix.environment ())
       else open_process_full cmd env in
     incr jobs_active;
     if not Sys.win32 then begin
