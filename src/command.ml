@@ -186,7 +186,7 @@ let string_of_command_spec_with_calls call_with_tags call_with_target resolve_vi
           aux buf (fun x -> Shell.quote_filename_if_needed x) q;
         let c = Buffer.contents buf in
         put_space ();
-        Buffer.add_string b ("'" ^ c ^ "'");
+        Buffer.add_string b (Shell.quote_filename_if_needed c);
         do_specs rest
       | x :: rest ->
         do_spec x;
