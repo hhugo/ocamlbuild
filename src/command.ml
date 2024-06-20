@@ -175,13 +175,15 @@ let string_of_command_spec_with_calls call_with_tags call_with_target resolve_vi
       | [] -> ()
       | (A "-pp" as pp) :: Quote q :: rest ->
         do_spec pp;
-        let first = ref true in
         let buf = Buffer.create 256 in
-        aux buf (fun x ->
-          if (Sys.win32 && !first && (first := false; String.contains x '/')) || not (Shell.is_simple_filename x)
-          then
-          (My_std.quote_cmd ("\"" ^ String.escaped x ^ "\""))
-        else x) q;
+        if Sys.win32 then
+          let first = ref true in
+          aux buf (fun x ->
+            if ((!first && (first := false; String.contains x '/')) || not (Shell.is_simple_filename x))
+            then (My_std.quote_cmd ("\"" ^ String.escaped x ^ "\""))
+            else x) q
+        else
+          aux buf (fun x -> Shell.quote_filename_if_needed x) q;
         let c = Buffer.contents buf in
         put_space ();
         Buffer.add_string b ("'" ^ c ^ "'");
