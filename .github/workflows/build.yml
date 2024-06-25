@@ -56,7 +56,7 @@ jobs:
           opam exec -- ocamlc -version >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
         id: conf
-
+      - run: opam exec -- ocamlc -version
       - run: echo ${{steps.conf.outputs.ocamlversion}}
 
       - run: opam install . --with-test --deps-only
