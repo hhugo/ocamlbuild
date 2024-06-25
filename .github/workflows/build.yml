@@ -51,7 +51,8 @@ jobs:
           ocaml-compiler: ${{ matrix.ocaml-compiler }}
           allow-prerelease-opam: true
 
-      - run: |
+      - name: config
+        run: |
           echo "ocamlversion<<EOF" >> $GITHUB_OUTPUT
           opam exec -- ocamlc -version >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
@@ -59,6 +60,7 @@ jobs:
         shell: bash
       - run: opam exec -- ocamlc -version
       - run: echo ${{steps.conf.outputs.ocamlversion}}
+        shell: bash
 
       - run: opam install . --with-test --deps-only
 
