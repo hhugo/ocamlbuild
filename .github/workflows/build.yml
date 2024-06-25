@@ -78,4 +78,4 @@ jobs:
       - run: opam exec -- opam install -v cpuid.0.1.1 # this tests the ocb-stubblr plugin
         if: runner.os != 'Windows'
       - run: opam exec -- opam install -v shcaml.0.2.1 # this tests the cppo plugin
-        if: {{ ! startsWith(steps.conf.outputs.ocamlversion, '5.') && runner.os != 'Windows' }}
+        if: ${{ ! startsWith(steps.conf.outputs.ocamlversion, '5.') && runner.os != 'Windows' }}
