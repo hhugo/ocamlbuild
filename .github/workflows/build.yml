@@ -57,6 +57,8 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
         id: conf
 
+      - run: echo ${{steps.conf.outputs.ocamlversion}}
+
       - run: opam install . --with-test --deps-only
 
       - run: opam exec -- make test
