@@ -51,6 +51,8 @@ jobs:
           ocaml-compiler: ${{ matrix.ocaml-compiler }}
           allow-prerelease-opam: true
 
+      - run: opam exec -- ocamlc -version >> "$GITHUB_OUTPUT"
+
       - run: opam install . --with-test --deps-only
 
       - run: opam exec -- make test
