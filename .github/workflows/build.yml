@@ -55,6 +55,7 @@ jobs:
           echo "ocamlversion<<EOF" >> $GITHUB_OUTPUT
           opam exec -- ocamlc -version >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+        id: conf
 
       - run: opam install . --with-test --deps-only
 
@@ -68,13 +69,13 @@ jobs:
       - run: opam exec -- opam install -v ocamlbuild
       - run: opam exec -- opam install -v menhir
       - run: opam exec -- opam install -v camlp4
-        if: (! contains(matrix.ocaml-compiler, '5.2'))
+        if: (! startsWith(conf.outputs.ocamlversion, '5.2'))
       - run: opam exec -- make test-external
-        if: (! contains(matrix.ocaml-compiler, '5.2'))
+        if: (! startsWith(conf.outputs.ocamlversion, '5.2'))
       - run: opam exec -- opam install -v mtime.1.4.0 # this tests topkg, with stub libraries
       - run: opam exec -- opam install -v inotify.2.3 # this tests oasis, with stub libraries
-        if: (! contains(matrix.ocaml-compiler, '5')) && runner.os != 'Windows'
+        if: (! startsWith(conf.outputs.ocamlversion, '5')) && runner.os != 'Windows'
       - run: opam exec -- opam install -v cpuid.0.1.1 # this tests the ocb-stubblr plugin
         if: runner.os != 'Windows'
       - run: opam exec -- opam install -v shcaml.0.2.1 # this tests the cppo plugin
-        if: (! contains(matrix.ocaml-compiler, '5')) && runner.os != 'Windows'
+        if: (! startsWith(conf.outputs.ocamlversion, '5')) && runner.os != 'Windows'
