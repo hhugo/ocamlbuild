@@ -11,6 +11,8 @@
 (*                                                                     *)
 (***********************************************************************)
 
+#mod_use "../src/ocamlbuild_config.ml";;
+
 open Format
 
 external (|>) :  'a -> ('a -> 'b) -> 'b = "%revapply"
@@ -30,7 +32,19 @@ let print_string_list = print_list_com pp_print_string
 let print_string_list_com = print_list_com pp_print_string
 let print_string_list_blank = print_list_blank pp_print_string
 
-let exists filename = Sys.file_exists filename
+(* so that it works on symlink *)
+let sys_file_exists x =
+  let dirname = Filename.dirname x in
+  let basename = Filename.basename x in
+  match Sys.readdir dirname with
+  | exception _ -> false
+  | a ->
+      if basename = Filename.current_dir_name then true else
+      if dirname = x (* issue #86: (dirname "/" = "/") *) then true else
+      try Array.iter (fun x -> if x = basename then raise Exit) a; false
+      with Exit -> true
+
+let exists filename = sys_file_exists filename
 
 let execute cmd =
   let ic = Unix.open_process_in cmd and lst = ref [] in
@@ -40,10 +54,77 @@ let execute cmd =
     let ret_code = Unix.close_process_in ic
     in ret_code, List.rev !lst
 
+    (* Copied from opam
+   https://github.com/ocaml/opam/blob/ca32ab3b976aa7abc00c7605548f78a30980d35b/src/core/opamStd.ml *)
+let split_quoted path sep =
+  let length = String.length path in
+  let rec f acc index current last normal =
+    if (index : int) = length then
+      let current = current ^ String.sub path last (index - last) in
+      List.rev (if current <> "" then current::acc else acc)
+    else
+    let c = path.[index]
+    and next = succ index in
+    if (c : char) = sep && normal || c = '"' then
+      let current = current ^ String.sub path last (index - last) in
+      if c = '"' then
+        f acc next current next (not normal)
+      else
+      let acc = if current = "" then acc else current::acc in
+      f acc next "" next true
+    else
+      f acc next current last normal in
+  f [] 0 "" 0 true
+
+let env_path = lazy begin
+  let path_var = (try Sys.getenv "PATH" with Not_found -> "") in
+  (* opam doesn't support empty path to mean working directory, let's
+    do the same here *)
+  if Sys.win32 then
+    split_quoted path_var ';'
+  else
+    String.split_on_char ':' path_var
+    |> List.filter ((<>) "")
+  end
+
+let windows_shell = lazy begin
+  let rec iter = function
+  | [] -> raise Not_found
+  | hd::tl ->
+    let dash = Filename.concat hd "dash.exe" in
+    if Sys.file_exists dash then [|dash|] else
+    let bash = Filename.concat hd "bash.exe" in
+    if not (Sys.file_exists bash) then iter tl else
+    (* if sh.exe and bash.exe exist in the same dir, choose sh.exe *)
+    let sh = Filename.concat hd "sh.exe" in
+    if Sys.file_exists sh then [|sh|] else [|bash ; "--norc" ; "--noprofile"|]
+  in
+  let paths = Lazy.force env_path in
+  let shell =
+    try
+      let path =
+        List.find (fun path ->
+            Sys.file_exists (Filename.concat path "cygcheck.exe")) paths
+      in
+      iter [path]
+    with Not_found ->
+      (try iter paths with Not_found -> failwith "no posix shell found in PATH")
+  in
+  shell
+end
+
+let sys_command_win32 cmd =
+  let args = Array.append (Lazy.force windows_shell) [| "-c"; cmd |] in
+  let oc = Unix.open_process_args_out args.(0) args in
+  match Unix.close_process_out oc with
+  | WEXITED x -> x
+  | WSIGNALED _ -> 2 (* like OCaml's uncaught exceptions *)
+  | WSTOPPED _ -> 127
+
 (* Simplified implementation of My_std.sys_command to avoid duplicating code. *)
 let sys_command cmd =
   if Sys.win32
-  then Sys.command (Printf.sprintf "bash --norc --noprofile -c %S" cmd)
+  then sys_command_win32 cmd
   else Sys.command cmd
 
 let rm f =
@@ -114,7 +195,7 @@ module Match = struct
 
   let match_with_fs ~root m =
     let rec visit ~exact ~successes ~errors path m =
-      let string_of_path path = "./" ^ String.concat "/" (List.rev path) in
+      let string_of_path path = String.concat "/" (List.rev path) in
       let file name = string_of_path (name :: path) in
       let push li x = li := x :: !li in
       let exists_assert filename =
@@ -386,6 +467,10 @@ module Tree = struct
 
 end
 
+let a = Ocamlbuild_config.a
+let o = Ocamlbuild_config.o
+let so = Ocamlbuild_config.so
+
 type content = string
 type filename = string
 type run = filename * content
@@ -468,16 +553,16 @@ let run ~root =
   copy
     [ "plugin-lib/ocamlbuildlib.cma";
       "plugin-lib/ocamlbuildlib.cmxa";
-      "plugin-lib/ocamlbuildlib.a";
+      "plugin-lib/ocamlbuildlib." ^ a;
       "bin/ocamlbuild.cmo";
       "bin/ocamlbuild.cmx";
-      "bin/ocamlbuild.o";
+      "bin/ocamlbuild." ^ o;
       "src/ocamlbuild_pack.cmi";
       "src/ocamlbuild_pack.cmx";
-      "src/ocamlbuild_pack.o";
+      "src/ocamlbuild_pack." ^ o;
       "plugin-lib/ocamlbuild_plugin.cmi";
       "plugin-lib/ocamlbuild_plugin.cmx";
-      "plugin-lib/ocamlbuild_plugin.o" ]
+      "plugin-lib/ocamlbuild_plugin." ^ o ]
     install_lib_dir;
   copy
     [ "ocamlbuild.byte";
