@@ -53,13 +53,16 @@ jobs:
 
       - name: config
         run: |
-          echo "ocamlversion<<EOF" >> $GITHUB_OUTPUT
-          opam exec -- ocamlc -version >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "ocamlversion<<EOF"
+            opam exec -- ocamlc -version
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
         id: conf
         shell: bash
       - run: opam exec -- ocamlc -version
-      - run: echo ${{steps.conf.outputs.ocamlversion}}
+        shell: bash
+      - run: echo "${{steps.conf.outputs.ocamlversion}}"
         shell: bash
 
       - run: opam install . --with-test --deps-only
