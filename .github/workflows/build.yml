@@ -52,12 +52,7 @@ jobs:
           allow-prerelease-opam: true
 
       - name: config
-        run: |
-          {
-            echo "ocamlversion<<EOF"
-            opam exec -- ocamlc -version
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
+        run: echo "ocamlversion=$(opam exec -- ocamlc -version)" >> $GITHUB_OUTPUT
         id: conf
         shell: bash
       - run: opam exec -- ocamlc -version
